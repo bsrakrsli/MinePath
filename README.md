@@ -1,4 +1,3 @@
-<img width="1190" height="678" alt="Ekran Resmi 2026-07-16 01 51 58" src="https://github.com/user-attachments/assets/4eb9ae34-3a9c-4b6d-bb50-9e0dc29c4e29" />
 # MinePath – Interactive Haul Road Route Editor
 
 MinePath is a lightweight web-based GIS application developed as a demonstration of manual haul road digitization and route comparison for open-pit mining operations.
