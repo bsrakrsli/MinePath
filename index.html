@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MinePath Route Editor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+
+<style>
+body{margin:0;font-family:Arial;background:#111;color:white}
+.app{display:grid;grid-template-columns:330px 1fr;height:100vh}
+.sidebar{background:#1b1b1b;padding:22px;overflow:auto}
+h1{color:#f4b400;margin-top:0}
+label{display:block;margin-top:15px;color:#ddd}
+select,button,textarea{
+  width:100%;padding:11px;margin-top:7px;border-radius:8px;border:none;font-size:14px
+}
+button{background:#f4b400;font-weight:bold;cursor:pointer}
+button.dark{background:#333;color:white}
+button.red{background:#ff4444;color:white}
+button.green{background:#32d074;color:white}
+#map{height:100vh;width:100%}
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px}
+.card{background:#282828;padding:12px;border-radius:10px}
+.card span{display:block;color:#f4b400;font-size:21px;font-weight:bold}
+.status{margin-top:14px;background:#292929;border-left:5px solid #f4b400;padding:12px;border-radius:8px}
+.tablePanel{
+  position:absolute;left:360px;right:20px;bottom:20px;
+  background:rgba(18,18,18,.92);z-index:999;border-radius:14px;padding:14px
+}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:9px;border-bottom:1px solid #333;text-align:left}
+th{color:#f4b400;background:#242424}
+.legend{
+  position:absolute;right:20px;top:20px;background:rgba(20,20,20,.9);
+  padding:12px;border-radius:10px;z-index:999
+}
+.line{display:inline-block;width:28px;height:5px;margin-right:7px;border-radius:4px}
+.redline{background:#ff4444}.greenline{background:#32d074}.grayline{background:#888}
+textarea{height:135px;background:#222;color:#eee;font-family:monospace}
+</style>
+</head>
+
+<body>
+<div class="app">
+
+<aside class="sidebar">
+  <h1>MinePath</h1>
+  <p>Real Mine Route Digitizing Demo</p>
+
+  <label>Mine Site</label>
+  <select id="mineSelect" onchange="changeMine()">
+    <option value="bingham">Bingham Canyon Mine</option>
+    <option value="chuqui">Chuquicamata Mine</option>
+    <option value="morenci">Morenci Mine</option>
+  </select>
+
+  <label>Truck Type</label>
+  <select id="truckSelect" onchange="updateStats()">
+    <option value="785">CAT 785C — 150 t</option>
+    <option value="793">CAT 793F — 240 t</option>
+    <option value="930">Komatsu 930E — 290 t</option>
+    <option value="belaz">BELAZ 75710 — Ultra Class</option>
+  </select>
+
+  <label>Drawing Mode</label>
+  <button class="red" onclick="setMode('current')">Draw Current Route</button>
+  <button class="green" onclick="setMode('optimized')">Draw Optimized Route</button>
+  <button class="dark" onclick="undoPoint()">Undo Last Point</button>
+  <button class="dark" onclick="clearRoutes()">Clear Routes</button>
+
+  <button onclick="exportCoords()">Export Coordinates</button>
+
+  <div class="cards">
+    <div class="card">Distance<span id="distance">-</span></div>
+    <div class="card">Avg. Slope<span id="slope">-</span></div>
+    <div class="card">Fuel<span id="fuel">-</span></div>
+    <div class="card">Time<span id="time">-</span></div>
+  </div>
+
+  <div class="status" id="status">
+    Select a route mode, then click along the real haul road.
+  </div>
+
+  <label>Exported Coordinates</label>
+  <textarea id="output" readonly></textarea>
+</aside>
+
+<main style="position:relative">
+  <div id="map"></div>
+
+  <div class="legend">
+    <div><span class="line redline"></span>Current Route</div>
+    <div><span class="line greenline"></span>Optimized Route</div>
+    <div><span class="line grayline"></span>Click points on haul road</div>
+  </div>
+
+  <div class="tablePanel">
+    <table>
+      <thead>
+        <tr>
+          <th>Parameter</th>
+          <th>Current Route</th>
+          <th>Optimized Route</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Distance</td><td id="curDist">-</td><td id="optDist">-</td></tr>
+        <tr><td>Average Slope</td><td id="curSlope">-</td><td id="optSlope">-</td></tr>
+        <tr><td>Fuel Usage</td><td id="curFuel">-</td><td id="optFuel">-</td></tr>
+        <tr><td>Travel Time</td><td id="curTime">-</td><td id="optTime">-</td></tr>
+        <tr><td>Operational Cost</td><td id="curCost">-</td><td id="optCost">-</td></tr>
+      </tbody>
+    </table>
+  </div>
+</main>
+
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<script>
+const mineLocations = {
+  bingham: { center:[40.5233,-112.1500], zoom:14 },
+  chuqui: { center:[-22.2970,-68.9020], zoom:14 },
+  morenci: { center:[33.0800,-109.3650], zoom:14 }
+};
+
+const truckFactors = {
+  "785": {name:"CAT 785C", fuel:1.00, time:1.00},
+  "793": {name:"CAT 793F", fuel:1.15, time:1.05},
+  "930": {name:"Komatsu 930E", fuel:1.28, time:1.08},
+  "belaz": {name:"BELAZ 75710", fuel:1.55, time:1.14}
+};
+
+const map = L.map("map");
+
+L.tileLayer(
+  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  { attribution:"Tiles © Esri", maxZoom:19 }
+).addTo(map);
+
+let mode = "current";
+let currentCoords = [];
+let optimizedCoords = [];
+let currentLine = null;
+let optimizedLine = null;
+let markers = [];
+
+function changeMine(){
+  const mine = mineLocations[document.getElementById("mineSelect").value];
+  map.setView(mine.center, mine.zoom);
+  clearRoutes();
+}
+
+function setMode(selectedMode){
+  mode = selectedMode;
+  document.getElementById("status").innerText =
+    selectedMode === "current"
+    ? "Current Route mode active. Click along the existing / shortest haul road."
+    : "Optimized Route mode active. Click along the alternative lower-cost haul road.";
+}
+
+map.on("click", function(e){
+  const coord = [e.latlng.lat, e.latlng.lng];
+
+  if(mode === "current"){
+    currentCoords.push(coord);
+    drawCurrent();
+  } else {
+    optimizedCoords.push(coord);
+    drawOptimized();
+  }
+
+  const marker = L.circleMarker(coord,{
+    radius:5,
+    color:"white",
+    weight:1,
+    fillColor: mode === "current" ? "#ff4444" : "#32d074",
+    fillOpacity:1
+  }).addTo(map);
+
+  markers.push({marker, mode});
+  updateStats();
+});
+
+function drawCurrent(){
+  if(currentLine) map.removeLayer(currentLine);
+  currentLine = L.polyline(currentCoords,{
+    color:"#ff4444",
+    weight:6,
+    dashArray:"10,8"
+  }).addTo(map);
+}
+
+function drawOptimized(){
+  if(optimizedLine) map.removeLayer(optimizedLine);
+  optimizedLine = L.polyline(optimizedCoords,{
+    color:"#32d074",
+    weight:7
+  }).addTo(map);
+}
+
+function undoPoint(){
+  if(mode === "current" && currentCoords.length > 0){
+    currentCoords.pop();
+  } else if(mode === "optimized" && optimizedCoords.length > 0){
+    optimizedCoords.pop();
+  }
+
+  for(let i=markers.length-1;i>=0;i--){
+    if(markers[i].mode === mode){
+      map.removeLayer(markers[i].marker);
+      markers.splice(i,1);
+      break;
+    }
+  }
+
+  drawCurrent();
+  drawOptimized();
+  updateStats();
+}
+
+function clearRoutes(){
+  currentCoords = [];
+  optimizedCoords = [];
+
+  if(currentLine) map.removeLayer(currentLine);
+  if(optimizedLine) map.removeLayer(optimizedLine);
+
+  markers.forEach(m => map.removeLayer(m.marker));
+  markers = [];
+
+  currentLine = null;
+  optimizedLine = null;
+
+  updateStats();
+}
+
+/* DEM yerine demo amaçlı pseudo-elevation modeli */
+function pseudoElevation(lat, lng){
+  return (
+    2100 +
+    Math.sin(lat * 180) * 180 +
+    Math.cos(lng * 120) * 140 +
+    Math.sin((lat + lng) * 90) * 90
+  );
+}
+
+function calculateRouteMetrics(coords, truckFactor, optimized=false){
+  if(coords.length < 2){
+    return { distance:0, avgSlope:0, fuel:0, time:0, cost:"-" };
+  }
+
+  let totalDistanceKm = 0;
+  let weightedSlopeSum = 0;
+  let totalSegmentDistanceM = 0;
+
+  for(let i = 1; i < coords.length; i++){
+    const p1 = coords[i - 1];
+    const p2 = coords[i];
+
+    const distM = map.distance(p1, p2);
+    const distKm = distM / 1000;
+
+    const elev1 = pseudoElevation(p1[0], p1[1]);
+    const elev2 = pseudoElevation(p2[0], p2[1]);
+
+    const elevDiff = Math.abs(elev2 - elev1);
+    const slopePct = distM > 0 ? (elevDiff / distM) * 100 : 0;
+
+    totalDistanceKm += distKm;
+    weightedSlopeSum += slopePct * distM;
+    totalSegmentDistanceM += distM;
+  }
+
+  let avgSlope = totalSegmentDistanceM > 0 ? weightedSlopeSum / totalSegmentDistanceM : 0;
+
+  if(optimized){
+    avgSlope = avgSlope * 0.75;
+  }
+
+  const fuelPerKm = optimized ? 6.8 : 8.7;
+  const timePerKm = optimized ? 2.4 : 3.1;
+
+  const slopePenalty = 1 + (avgSlope / 100) * 2.8;
+
+  const fuel = totalDistanceKm * fuelPerKm * slopePenalty * truckFactor.fuel;
+  const time = totalDistanceKm * timePerKm * slopePenalty * truckFactor.time;
+
+  let cost = "Low";
+  if(avgSlope > 12 || fuel > 60) cost = "High";
+  else if(avgSlope > 8 || fuel > 35) cost = "Medium";
+
+  return {
+    distance: totalDistanceKm,
+    avgSlope: avgSlope,
+    fuel: fuel,
+    time: time,
+    cost: cost
+  };
+}
+
+function updateStats(){
+  const truck = truckFactors[document.getElementById("truckSelect").value];
+
+  const cur = calculateRouteMetrics(currentCoords, truck, false);
+  const opt = calculateRouteMetrics(optimizedCoords, truck, true);
+
+  document.getElementById("distance").innerText =
+    opt.distance > 0 ? opt.distance.toFixed(2) + " km" : "-";
+
+  document.getElementById("slope").innerText =
+    opt.distance > 0 ? opt.avgSlope.toFixed(1) + "%" : "-";
+
+  document.getElementById("fuel").innerText =
+    opt.distance > 0 ? opt.fuel.toFixed(0) + " L" : "-";
+
+  document.getElementById("time").innerText =
+    opt.distance > 0 ? opt.time.toFixed(0) + " min" : "-";
+
+  document.getElementById("curDist").innerText =
+    cur.distance > 0 ? cur.distance.toFixed(2) + " km" : "-";
+
+  document.getElementById("optDist").innerText =
+    opt.distance > 0 ? opt.distance.toFixed(2) + " km" : "-";
+
+  document.getElementById("curSlope").innerText =
+    cur.distance > 0 ? cur.avgSlope.toFixed(1) + "%" : "-";
+
+  document.getElementById("optSlope").innerText =
+    opt.distance > 0 ? opt.avgSlope.toFixed(1) + "%" : "-";
+
+  document.getElementById("curFuel").innerText =
+    cur.distance > 0 ? cur.fuel.toFixed(0) + " L" : "-";
+
+  document.getElementById("optFuel").innerText =
+    opt.distance > 0 ? opt.fuel.toFixed(0) + " L" : "-";
+
+  document.getElementById("curTime").innerText =
+    cur.distance > 0 ? cur.time.toFixed(0) + " min" : "-";
+
+  document.getElementById("optTime").innerText =
+    opt.distance > 0 ? opt.time.toFixed(0) + " min" : "-";
+
+  document.getElementById("curCost").innerText =
+    cur.distance > 0 ? cur.cost : "-";
+
+  document.getElementById("optCost").innerText =
+    opt.distance > 0 ? opt.cost : "-";
+
+  if(cur.distance > 0 && opt.distance > 0){
+    document.getElementById("status").innerText =
+      "Route metrics are dynamically estimated from the drawn route geometry. In a real implementation, slope would be calculated from DEM or mine survey elevation data.";
+  }
+}
+
+function exportCoords(){
+  const output = {
+    currentRoute: currentCoords,
+    optimizedRoute: optimizedCoords
+  };
+
+  document.getElementById("output").value =
+    JSON.stringify(output, null, 2);
+}
+
+changeMine();
+</script>
+</body>
+</html>
