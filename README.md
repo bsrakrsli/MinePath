@@ -129,16 +129,3 @@ Example:
 - Slope heatmap
 - Real mine road network analysis
 
----
-
-## Disclaimer
-
-This application is intended as a proof-of-concept and educational demonstration.
-
-The slope calculations are generated using a pseudo-elevation model and do not represent actual terrain elevations.
-
----
-
-## License
-
-MIT License
